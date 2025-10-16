@@ -1,4 +1,4 @@
-```markdown
+
 # Student Assignment Processing Pipeline
 
 This document outlines the logic and structure of the `StudentAssignmentProcessor` class and the Flask server application for processing student responses for course assignments. The application now provides two methods of operation: through a hosted front end or via a Jupyter notebook (calling the `process` method directly).
