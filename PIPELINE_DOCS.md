@@ -1,4 +1,3 @@
-
 # Student Assignment Processing Pipeline
 
 This document outlines the logic and structure of the `StudentAssignmentProcessor` class and the Flask server application for processing student responses for course assignments. The application now provides two methods of operation: through a hosted front end or via a Jupyter notebook (calling the `process` method directly).
@@ -29,10 +28,16 @@ Merges student responses into class DataFrames, ensuring that each class only co
 Extracts valid sector preferences from the priority columns (1st, 2nd, and 3rd) in the DataFrame.
 
 #### 3. `assign_sectors`
-Allocates students to sectors for Round 1 and Round 2, ensuring that sector sizes do not exceed predefined limits. It handles cases where students may need to be reassigned to balance groups.
+Allocates students to sectors for Round 1 and Round 2, ensuring that sector sizes do not exceed predefined limits. The logic includes:
+- **Priority Handling**: Students are assigned to their preferred sectors based on the order of priority (1st, 2nd, 3rd).
+- **Sector Size Management**: Each sector can accommodate a maximum number of students (`MAX_PER_SECTOR`). If a sector exceeds this limit, students are reassigned to their next preferred sector.
+- **Balancing**: The algorithm aims to maintain a balance between the number of students assigned to each sector, with a maximum allowable difference defined by `MAX_DIFF`.
 
 #### 4. `group_students_by_sector`
-Groups students within each sector based on their assignments, aiming for a balance between maximum and minimum group sizes.
+Groups students within each sector based on their assignments, aiming for balanced group sizes. The logic includes:
+- **Group Size Constraints**: Groups are formed with a maximum size (`max_group_size`) and a minimum size (`min_group_size`).
+- **Randomization**: Students are shuffled to avoid bias in grouping, ensuring a fair distribution of students.
+- **Dynamic Grouping**: The number of groups is determined based on the total number of students assigned to a sector, creating groups that are as evenly sized as possible.
 
 #### 5. `update_class_dfs`
 Updates the original class DataFrames with the assigned sectors and groups for each student.
