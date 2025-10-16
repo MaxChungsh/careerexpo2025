@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload Portal</title>
+</head>
+<body>
+    <h1>Upload Files</h1>
+    <form action="/" method="POST" enctype="multipart/form-data">
+        <label for="response_file">Response File:</label>
+        <input type="file" name="response_file" id="response_file" required><br><br>
+        <label for="classlist_file">Classlist File:</label>
+        <input type="file" name="classlist_file" id="classlist_file" required><br><br>
+        <button type="submit">Upload and Process</button>
+    </form>
+</body>
+</html>
