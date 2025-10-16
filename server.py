@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for
+from flask import Flask, render_template, request, send_file
 import os
 from processor import StudentAssignmentProcessor
 
@@ -13,8 +13,8 @@ app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    output_filename = None  # Initialize output_filename
     if request.method == 'POST':
-        # Check if files are uploaded
         response_file = request.files.get('response_file')
         classlist_file = request.files.get('classlist_file')
 
@@ -37,9 +37,7 @@ def index():
         processor = StudentAssignmentProcessor(response_path, classlist_path)
         processor.process(output_file=output_file)
 
-        return redirect(url_for('download', filename=output_filename))
-
-    return render_template('index.html')
+    return render_template('index.html', output_filename=output_filename)
 
 @app.route('/download', methods=['GET'])
 def download():
