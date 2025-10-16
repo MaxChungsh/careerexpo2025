@@ -2,6 +2,7 @@ import pandas as pd
 from collections import defaultdict, Counter
 import random
 from openpyxl.styles import PatternFill
+import os
 
 class StudentAssignmentProcessor:
     """Processes student responses and assigns sectors for Round 1 and Round 2."""
@@ -433,7 +434,14 @@ class StudentAssignmentProcessor:
 
     def process(self, min_sector_size=0, output_file=None, max_group_size=16, min_group_size=10):
         """Main method to process responses and assign sectors."""
-        response_df = pd.read_excel(self.response_file, sheet_name="Form Responses 1")
+        input_folder = "input"
+        output_folder = "output"
+        os.makedirs(output_folder, exist_ok=True)
+
+        response_file_path = os.path.join(input_folder, self.response_file)
+        classlist_file_path = os.path.join(input_folder, self.classlist_file)
+
+        response_df = pd.read_excel(response_file_path, sheet_name="Form Responses 1")
         response_df.columns = [
             'Timestamp', 'Chinese Name', 'English Name', 'Class', 'Class No.', 'Column 12',
             '1st Priority', '2nd Priority', '3rd Priority', 'Particular Course',
@@ -442,7 +450,7 @@ class StudentAssignmentProcessor:
         
         class_dfs = {}
         for cls in self.classes:
-            df = pd.read_excel(self.classlist_file, sheet_name=cls)
+            df = pd.read_excel(classlist_file_path, sheet_name=cls)
             df.drop(columns=[col for col in df.columns if col.startswith('AFT')], inplace=True, errors='ignore')
             df.rename(columns={col: 'Chi Name' for col in df.columns if col.startswith('FT')}, inplace=True)
             new_cols = [
@@ -461,4 +469,6 @@ class StudentAssignmentProcessor:
         students = self.group_students_by_sector(students, max_group_size=max_group_size, min_group_size=min_group_size)
         class_dfs, all_df = self.update_class_dfs(class_dfs, all_df, students)
         
+        if output_file is None:
+            output_file = os.path.join(output_folder, f"output_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
         self.write_to_excel(class_dfs, all_df, students, output_file=output_file)
