@@ -432,14 +432,25 @@ class StudentAssignmentProcessor:
             overview_df = pd.DataFrame(overview_data)
             overview_df.to_excel(writer, sheet_name='Overview', index=False)
 
-    def process(self, min_sector_size=0, output_file=None, max_group_size=16, min_group_size=10):
-        """Main method to process responses and assign sectors."""
+    def process(self, min_sector_size=0, output_file=None, max_group_size=16, min_group_size=10, 
+                response_file=None, classlist_file=None):
+        """
+        Main method to process responses and assign sectors.
+
+        Args:
+            min_sector_size (int): Minimum number of students in a sector across both rounds (default 0).
+            output_file (str, optional): Path to output Excel file.
+            max_group_size (int): Maximum number of students per group (default 16).
+            min_group_size (int): Minimum number of students per group to aim for (default 10).
+            response_file (str, optional): Path to the response file. Defaults to self.response_file.
+            classlist_file (str, optional): Path to the class list file. Defaults to self.classlist_file.
+        """
         output_folder = "output"
         os.makedirs(output_folder, exist_ok=True)
 
-        # Use the file paths directly as passed
-        response_file_path = self.response_file
-        classlist_file_path = self.classlist_file
+        # Use the provided file paths or default to self attributes
+        response_file_path = response_file if response_file else self.response_file
+        classlist_file_path = classlist_file if classlist_file else self.classlist_file
 
         response_df = pd.read_excel(response_file_path, sheet_name="Form Responses 1")
         response_df.columns = [

@@ -1,6 +1,7 @@
+```markdown
 # Student Assignment Processing Pipeline
 
-This document outlines the logic and structure of the `StudentAssignmentProcessor` class implemented in Python. This class processes student responses for course assignments, organizes them into sectors, and manages group assignments. Below is a detailed explanation of the pipeline logic.
+This document outlines the logic and structure of the `StudentAssignmentProcessor` class and the Flask server application for processing student responses for course assignments. The application now provides two methods of operation: through a hosted front end or via a Jupyter notebook (calling the `process` method directly).
 
 ## Overview
 
@@ -51,8 +52,36 @@ Outputs the processed data to an Excel file, creating individual sheets for each
 
 ## Example Usage
 
-To run the processing pipeline, create an instance of the `StudentAssignmentProcessor` and call the `process` method:
+### Through a Jupyter Notebook
+
+To run the processing pipeline directly in a notebook, create an instance of the `StudentAssignmentProcessor` and call the `process` method:
 
 ```python
 processor = StudentAssignmentProcessor(response_file='responses.xlsx', classlist_file='classlist.xlsx')
 processor.process(min_sector_size=10, output_file='output.xlsx')
+```
+
+### Through the Hosted Front End
+
+The application can also be run as a Flask server. Here’s how to use the web interface:
+
+1. **Run the Server**:
+   Execute the `server.py` file to start the Flask server.
+
+   ```bash
+   python server.py
+   ```
+
+2. **Upload Files**:
+   Navigate to `http://127.0.0.1:5000/` in your web browser. You will see a form to upload the response and class list files.
+
+3. **Process Files**:
+   After uploading both files, the application will process the data and redirect you to a download link for the processed Excel file.
+
+4. **Download Output**:
+   Click the provided link to download the processed output.
+
+## Conclusion
+
+This application provides a robust solution for assigning students to sectors based on their preferences, whether through a user-friendly web interface or directly in a programming environment. The design ensures flexibility and ease of use for managing student assignments effectively.
+```
