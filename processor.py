@@ -434,12 +434,12 @@ class StudentAssignmentProcessor:
 
     def process(self, min_sector_size=0, output_file=None, max_group_size=16, min_group_size=10):
         """Main method to process responses and assign sectors."""
-        input_folder = "input"
         output_folder = "output"
         os.makedirs(output_folder, exist_ok=True)
 
-        response_file_path = os.path.join(input_folder, self.response_file)
-        classlist_file_path = os.path.join(input_folder, self.classlist_file)
+        # Use the file paths directly as passed
+        response_file_path = self.response_file
+        classlist_file_path = self.classlist_file
 
         response_df = pd.read_excel(response_file_path, sheet_name="Form Responses 1")
         response_df.columns = [
