@@ -1,474 +1,397 @@
 import pandas as pd
 from collections import defaultdict, Counter
 import random
-from openpyxl.styles import PatternFill
 import os
+import logging
+import math
+from openpyxl.styles import PatternFill
+
+# --- Configure Logging ---
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - [IN %(funcName)s] - %(message)s'
+)
 
 class StudentAssignmentProcessor:
-    """Processes student responses and assigns sectors for Round 1 and Round 2."""
+    """
+    Processes student responses to assign them to two rounds of sector talks.
+    The number of groups per sector is determined by the number of available speakers,
+    with a maximum size constraint per group.
+    """
     
-    def __init__(self, response_file, classlist_file):
-        """Initialize with input and output file paths."""
+    def __init__(self, response_file, classlist_file, speaker_file):
+        logging.info("Initializing StudentAssignmentProcessor...")
         self.response_file = response_file
         self.classlist_file = classlist_file
-        self.sectors = [
+        self.speaker_file = speaker_file
+        
+        # --- Configuration ---
+        self.SECTORS = [
             'Allied Health (PT, OT, RT)', 'Architecture', 'Arts', 'Banking & Finance',
             'Computer Science', 'Education', 'Engineering', 'Law', 'Medical',
-            'Social Science and Social Work'
+            'Social Science & Social Work'
         ]
-        self.sector_dict = {s.lower(): s for s in self.sectors}
-        self.classes = ['5A', '5B', '5C', '5D', '6A', '6B', '6C', '6D']
+        self.CLASSES = ['5A', '5B', '5C', '5D', '6A', '6B', '6C', '6D']
         self.MAX_PER_SECTOR = 48
-        self.MAX_DIFF = 10
+        self.MAX_GROUP_SIZE = 25
+
+        # --- File Column/Sheet Names ---
+        self.SPEAKER_SECTOR_COL = '請勾選你希望參加的範疇'
+        self.RESPONSE_SHEET = 'Form Responses 1'
+        self.RESPONSE_COLS = {
+            'Timestamp': 'Timestamp', 
+            'English Name': 'Eng Name', 
+            'Class': 'Class', 
+            'Class No.': 'Class No.', 
+            'Please prioritize the majors you are interested in [1st priority]': '1st Priority', 
+            'Please prioritize the majors you are interested in [2nd priority]': '2nd Priority', 
+            'Please prioritize the majors you are interested in [3rd priority]': '3rd Priority'
+        }
+        
+        self.speaker_counts = {}
+        self.sector_dict = {s.lower(): s for s in self.SECTORS}
         self.yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
         self.red_fill = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
-        self.grey_fill = PatternFill(start_color='C0C0C0', end_color='C0C0C0', fill_type='solid')
-    
-    def merge_responses(self, response_df, class_dfs):
-        """
-        Merge response data into class DataFrames and create combined All F5 F6 DataFrame.
         
-        Args:
-            response_df (pd.DataFrame): Response data.
-            class_dfs (dict): Dictionary of class DataFrames (key: class name, value: DataFrame).
+        logging.info("Initialization complete.")
+
+    def _load_speaker_data(self, sheet_name=0):
+        logging.info(f"Loading speaker data from '{self.speaker_file}'...")
+        try:
+            speaker_df = pd.read_excel(self.speaker_file, sheet_name=sheet_name)
+            if self.SPEAKER_SECTOR_COL not in speaker_df.columns:
+                raise KeyError(f"FATAL: Column '{self.SPEAKER_SECTOR_COL}' not found in speaker file.")
+            
+            speaker_df[self.SPEAKER_SECTOR_COL] = speaker_df[self.SPEAKER_SECTOR_COL].str.replace('⁠', '').str.strip()
+            speaker_counts_series = speaker_df[self.SPEAKER_SECTOR_COL].value_counts()
+            
+            self.speaker_counts = {sector: int(speaker_counts_series.get(sector, 0)) for sector in self.SECTORS}
+            self.speaker_names = defaultdict(list)
+            for _, row in speaker_df.iterrows():
+                sector = row[self.SPEAKER_SECTOR_COL]
+                if sector in self.SECTORS:
+                    self.speaker_names[sector].append(row.get('Speaker Name', f"Speaker {len(self.speaker_names[sector]) + 1}"))
+            
+            logging.info(f"Speaker counts loaded successfully: {self.speaker_counts}")
+            logging.info(f"Speaker names loaded successfully: {dict(self.speaker_names)}")
+
+        except FileNotFoundError:
+            logging.error(f"FATAL: Speaker file not found at '{self.speaker_file}'")
+            raise
+        except Exception as e:
+            logging.error(f"An error occurred while loading speaker data: {e}")
+            raise
+
+    # --- MODIFIED MERGE FUNCTION TO PREVENT DUPLICATE COLUMNS ---
+    def _merge_responses_with_classlists(self, response_df, class_dfs):
+        logging.info("Merging student responses with class lists...")
         
-        Returns:
-            tuple: (updated class_dfs, all_df)
-        """
-        response_df['Class'] = response_df['Class'].str.upper()
+        response_df['Class'] = response_df['Class'].str.upper().str.strip()
         response_df['Class No.'] = pd.to_numeric(response_df['Class No.'], errors='coerce')
-        f56_response = response_df[response_df['Class'].str.startswith(('5', '6'))].copy()
-        f56_response = f56_response.sort_values(by='Timestamp', ascending=False)
-        f56_response = f56_response.drop_duplicates(subset=['Class', 'Class No.'], keep='first')
+        latest_responses = response_df.sort_values(by='Timestamp', ascending=False).drop_duplicates(subset=['Class', 'Class No.'])
         
-        for cls in self.classes:
-            df = class_dfs[cls]
-            for idx, row in df.iterrows():
-                class_ = row['Class'].upper()
-                no = row['Cls No']
-                match = f56_response[(f56_response['Class'] == class_) & (f56_response['Class No.'] == no)]
-                if not match.empty:
-                    m = match.iloc[0]
-                    df.at[idx, '1st Priority'] = m['1st Priority']
-                    df.at[idx, '2nd Priority'] = m['2nd Priority']
-                    df.at[idx, '3rd Priority'] = m['3rd Priority']
-                    df.at[idx, 'Particular Course'] = m['Particular Course']
-                    df.at[idx, 'Topics and Suggestions'] = m['Topics and Suggestions']
-                    df.at[idx, 'Other Majors'] = m['Other Majors']
+        # Drop 'Eng Name' and 'Timestamp' from responses
+        latest_responses = latest_responses.drop(columns=['Eng Name', 'Timestamp'], errors='ignore')
+
+        all_class_df = pd.concat(class_dfs.values(), ignore_index=True)
+        all_class_df['Class'] = all_class_df['Class'].str.upper().str.strip()
+
+        merged_df = pd.merge(
+            left=all_class_df,
+            right=latest_responses,
+            how='left',
+            left_on=['Class', 'Cls No'],
+            right_on=['Class', 'Class No.']
+        )
         
-        all_df = pd.concat(class_dfs.values(), ignore_index=True)
-        all_df = all_df[[col for col in all_df.columns if not (col.startswith('FT') or col.startswith('AFT'))]]
+        # Drop 'Class No.' from merged DataFrame
+        if 'Class No.' in merged_df.columns:
+            merged_df.drop(columns=['Class No.'], inplace=True)
         
-        return class_dfs, all_df
-    
-    def extract_sectors(self, df):
-        """
-        Extract valid sectors from priority columns.
+        # Drop columns starting with 'FT' or 'AFT'
+        cols_to_drop = [col for col in merged_df.columns if col.startswith('FT') or col.startswith('AFT')]
+        merged_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
         
-        Args:
-            df (pd.DataFrame): DataFrame with priority columns.
+        # Rename 'Eng Name_x' to 'Eng Name'
+        if 'Eng Name_x' in merged_df.columns:
+            merged_df.rename(columns={'Eng Name_x': 'Eng Name'}, inplace=True)
         
-        Returns:
-            pd.DataFrame: DataFrame with added p1_list, p2_list, p3_list columns.
-        """
+        for cls in self.CLASSES:
+            class_dfs[cls] = merged_df[merged_df['Class'] == cls].copy()
+            
+        logging.info("Merge complete.")
+        return class_dfs, merged_df
+
+    def _extract_sectors(self, df):
+        logging.info("Extracting sector preferences...")
         def get_sectors(entry):
-            if pd.isnull(entry) or entry == '':
-                return []
+            if pd.isnull(entry): return []
+            entry = str(entry).replace('⁠', '')
             parts = [p.strip().lower() for p in entry.split(',')]
             matched = []
             for p in parts:
-                if 'allied health' in p and '(pt' in p:
-                    matched.append(self.sectors[0])
-                elif p in self.sector_dict:
+                if 'allied health' in p and '(pt' in p: 
+                    matched.append(self.SECTORS[0])
+                elif 'social science' in p: 
+                    matched.append('Social Science & Social Work')
+                elif p in self.sector_dict: 
                     matched.append(self.sector_dict[p])
             return matched
-        
+
         df['p1_list'] = df['1st Priority'].apply(get_sectors)
         df['p2_list'] = df['2nd Priority'].apply(get_sectors)
         df['p3_list'] = df['3rd Priority'].apply(get_sectors)
+        logging.info("Sector extraction complete.")
         return df
-    
-    def assign_sectors(self, assign_df, min_sector_size=0):
-        """
-        Assign students to sectors for Round 1 and Round 2, discarding sectors with fewer than min_sector_size students.
-        
-        Args:
-            assign_df (pd.DataFrame): DataFrame with students to assign.
-            min_sector_size (int): Minimum number of students in a sector across both rounds (default 0).
-        
-        Returns:
-            list: List of student dictionaries with assignments.
-        """
-        students = assign_df.to_dict(orient='records')
-        
+
+    def _assign_sectors(self, assign_df):
+        logging.info("Assigning students to sectors...")
+        students_df = assign_df.copy()
+        students_df['student_id'] = list(zip(students_df['Class'], students_df['Cls No']))
+        students = students_df.to_dict('records')
+
         for s in students:
-            s['round1'] = None
-            s['round2'] = None
-            s['priority_used_r1'] = None
-            s['priority_used_r2'] = None
+            s.update({'round1': None, 'round2': None})
         
         sector_prefs = defaultdict(list)
         for s in students:
             for p, plist in [(1, s['p1_list']), (2, s['p2_list'])]:
                 for sec in plist:
-                    sector_prefs[sec].append((s, p))
+                    if self.speaker_counts.get(sec, 0) > 0:  # Skip sectors with zero speakers
+                        sector_prefs[sec].append((s, p))
         
-        for sec in self.sectors:
-            candidates = sector_prefs[sec]
+        for sec in self.SECTORS:
+            if self.speaker_counts.get(sec, 0) == 0:
+                continue  # Skip sectors with zero speakers
+            
+            candidates = sector_prefs.get(sec, [])
             if not candidates:
                 continue
+            
+            random.shuffle(candidates)
             candidates.sort(key=lambda x: x[1])
-            total = len(candidates)
-            target_per_round = total // 2
-            r1_count = 0
-            assigned = set()
             
+            assigned_students = set()
             for s, p in candidates:
-                student_id = (s['Class'], s['Cls No'])
-                if r1_count < target_per_round + (total % 2) and student_id not in assigned:
-                    if not s['round1'] or s['priority_used_r1'] > p:
+                if s['student_id'] in assigned_students:
+                    continue
+                
+                r1_counts = Counter(st.get('round1') for st in students if st.get('round1'))
+                r2_counts = Counter(st.get('round2') for st in students if st.get('round2'))
+
+                if r1_counts.get(sec, 0) <= r2_counts.get(sec, 0):
+                    if not s['round1'] and r1_counts.get(sec, 0) < self.MAX_PER_SECTOR:
                         s['round1'] = sec
-                        s['priority_used_r1'] = p
-                        r1_count += 1
-                        assigned.add(student_id)
-            
-            for s, p in candidates:
-                student_id = (s['Class'], s['Cls No'])
-                if student_id not in assigned and (not s['round2'] or s['priority_used_r2'] > p):
-                    if s['round1'] != sec:
+                        assigned_students.add(s['student_id'])
+                else:
+                    if not s['round2'] and s.get('round1') != sec and r2_counts.get(sec, 0) < self.MAX_PER_SECTOR:
                         s['round2'] = sec
-                        s['priority_used_r2'] = p
-                        assigned.add(student_id)
-        
+                        assigned_students.add(s['student_id'])
+
         for s in students:
-            student_id = (s['Class'], s['Cls No'])
-            if not s['round1']:
-                for sec in s['p3_list']:
-                    r1_counts = Counter(st['round1'] for st in students if st['round1'])
-                    if r1_counts.get(sec, 0) < self.MAX_PER_SECTOR:
+            if not s['round1'] or not s['round2']:
+                all_prefs = [sec for sec in (s['p1_list'] + s['p2_list'] + s['p3_list']) if self.speaker_counts.get(sec, 0) > 0]
+                for sec in all_prefs:
+                    if not s['round1']:
                         s['round1'] = sec
-                        s['priority_used_r1'] = 3
+                    elif not s['round2'] and s['round1'] != sec:
+                        s['round2'] = sec
                         break
-            if not s['round2']:
-                for sec in s['p3_list']:
-                    if sec != s['round1']:
-                        r2_counts = Counter(st['round2'] for st in students if st['round2'])
-                        if r2_counts.get(sec, 0) < self.MAX_PER_SECTOR:
-                            s['round2'] = sec
-                            s['priority_used_r2'] = 3
-                            break
-        
-        if min_sector_size > 0:
-            for sec in self.sectors:
-                r1_stds = [s for s in students if s['round1'] == sec]
-                r2_stds = [s for s in students if s['round2'] == sec]
-                total = len(r1_stds) + len(r2_stds)
-                if total < min_sector_size:
-                    for s in r1_stds:
-                        for p, plist in [(1, s['p1_list']), (2, s['p2_list']), (3, s['p3_list'])]:
-                            for new_sec in plist:
-                                if new_sec != sec:
-                                    r1_counts = Counter(st['round1'] for st in students if st['round1'])
-                                    if r1_counts.get(new_sec, 0) < self.MAX_PER_SECTOR:
-                                        s['round1'] = new_sec
-                                        s['priority_used_r1'] = p
-                                        break
-                            if s['round1'] != sec:
-                                break
-                        if s['round1'] == sec:
-                            s['round1'] = None
-                            s['priority_used_r1'] = None
-                    for s in r2_stds:
-                        for p, plist in [(1, s['p1_list']), (2, s['p2_list']), (3, s['p3_list'])]:
-                            for new_sec in plist:
-                                if new_sec != sec and new_sec != s['round1']:
-                                    r2_counts = Counter(st['round2'] for st in students if st['round2'])
-                                    if r2_counts.get(new_sec, 0) < self.MAX_PER_SECTOR:
-                                        s['round2'] = new_sec
-                                        s['priority_used_r2'] = p
-                                        break
-                            if s['round2'] == sec:
-                                s['round2'] = None
-                                s['priority_used_r2'] = None
-        
-        for sec in self.sectors:
-            r1_stds = [s for s in students if s['round1'] == sec]
-            r2_stds = [s for s in students if s['round2'] == sec]
-            n1, n2 = len(r1_stds), len(r2_stds)
-            if n1 + n2 < min_sector_size:
-                continue
-            if abs(n1 - n2) > self.MAX_DIFF:
-                excess_round = 'round1' if n1 > n2 else 'round2'
-                deficit_round = 'round2' if n1 > n2 else 'round1'
-                excess_count = n1 if n1 > n2 else n2
-                target = (n1 + n2) // 2
-                candidates = [(s, s[f'priority_used_{excess_round}']) for s in students if s[excess_round] == sec]
-                candidates.sort(key=lambda x: x[1], reverse=True)
-                to_move = excess_count - target
-                for s, _ in candidates[:to_move]:
-                    for p, plist in [(1, s['p1_list']), (2, s['p2_list'])]:
-                        for new_sec in plist:
-                            if new_sec != sec and new_sec != s[deficit_round]:
-                                counts = Counter(st[deficit_round] for st in students if st[deficit_round])
-                                if counts.get(new_sec, 0) < self.MAX_PER_SECTOR:
-                                    s[excess_round] = None
-                                    s[f'priority_used_{excess_round}'] = None
-                                    s[deficit_round] = new_sec
-                                    s[f'priority_used_{deficit_round}'] = p
-                                    break
-                        if s[deficit_round] != sec:
-                            break
-        
-        for round_key, counts in [('round1', Counter(s['round1'] for s in students if s['round1'])), 
-                                  ('round2', Counter(s['round2'] for s in students if s['round2']))]:
-            over_sectors = [sec for sec in counts if counts[sec] > self.MAX_PER_SECTOR]
-            for sec in over_sectors:
-                excess = counts[sec] - self.MAX_PER_SECTOR
-                candidates = [(s, s[f'priority_used_{round_key}']) for s in students if s[round_key] == sec]
-                candidates.sort(key=lambda x: x[1], reverse=True)
-                for s, _ in candidates[:excess]:
-                    for p, plist in [(1, s['p1_list']), (2, s['p2_list']), (3, s['p3_list'])]:
-                        for new_sec in plist:
-                            if (round_key == 'round2' and new_sec != s['round1'] or round_key == 'round1') and counts.get(new_sec, 0) < self.MAX_PER_SECTOR:
-                                s[round_key] = new_sec
-                                s[f'priority_used_{round_key}'] = p
-                                counts[sec] -= 1
-                                counts[new_sec] = counts.get(new_sec, 0) + 1
-                                break
-        
+        logging.info("Sector assignment complete.")
         return students
-    
-    def group_students_by_sector(self, students, max_group_size=16, min_group_size=10):
-        """
-        Group students within each sector for Round 1 and Round 2, balancing group sizes.
-        
-        Args:
-            students (list): List of student dictionaries with 'round1' and 'round2' assignments.
-            max_group_size (int): Maximum number of students per group (default 16).
-            min_group_size (int): Minimum number of students per group to aim for (default 10).
-        
-        Returns:
-            list: Updated student dictionaries with 'round1_group' and 'round2_group' assignments.
-        """
-        if min_group_size <= 0:
-            raise ValueError("min_group_size must be greater than 0")
-        
+
+    def _group_students_by_speaker_availability(self, students):
+        logging.info("Grouping students by sector based on speaker counts and group size...")
         for s in students:
             s['round1_group'] = None
             s['round2_group'] = None
         
-        for sec in self.sectors:
+        for sec in self.SECTORS:
+            num_speakers = self.speaker_counts.get(sec, 0)
+            if num_speakers == 0:
+                continue  # Skip sectors with zero speakers
+
+            # Round 1 grouping
             r1_stds = [s for s in students if s['round1'] == sec]
-            r2_stds = [s for s in students if s['round2'] == sec]
-            
-            # Group Round 1 students
             if r1_stds:
+                num_students_r1 = len(r1_stds)
+                groups_needed = math.ceil(num_students_r1 / self.MAX_GROUP_SIZE)
+                num_groups_to_form = min(groups_needed, num_speakers)
+                
                 random.shuffle(r1_stds)
-                num_students = len(r1_stds)
-                # Calculate number of groups to balance sizes
-                num_groups = max(1, min((num_students + max_group_size - 1) // max_group_size, 
-                                       num_students // min_group_size + 1))
-                base_size = num_students // num_groups
-                extra = num_students % num_groups
-                group_sizes = [base_size + 1 if i < extra else base_size for i in range(num_groups)]
-                
-                current_idx = 0
-                for i, size in enumerate(group_sizes):
-                    group_name = f"Group {i + 1}"
-                    for s in r1_stds[current_idx:current_idx + size]:
-                        s['round1_group'] = group_name
-                    current_idx += size
-            
-            # Group Round 2 students
+                for i, s in enumerate(r1_stds):
+                    group_number = (i % num_groups_to_form) + 1
+                    s['round1_group'] = f"Group {group_number}"
+
+            # Round 2 grouping
+            r2_stds = [s for s in students if s['round2'] == sec]
             if r2_stds:
+                num_students_r2 = len(r2_stds)
+                groups_needed = math.ceil(num_students_r2 / self.MAX_GROUP_SIZE)
+                num_groups_to_form = min(groups_needed, num_speakers)
+
                 random.shuffle(r2_stds)
-                num_students = len(r2_stds)
-                num_groups = max(1, min((num_students + max_group_size - 1) // max_group_size, 
-                                       num_students // min_group_size + 1))
-                base_size = num_students // num_groups
-                extra = num_students % num_groups
-                group_sizes = [base_size + 1 if i < extra else base_size for i in range(num_groups)]
-                
-                current_idx = 0
-                for i, size in enumerate(group_sizes):
-                    group_name = f"Group {i + 1}"
-                    for s in r2_stds[current_idx:current_idx + size]:
-                        s['round2_group'] = group_name
-                    current_idx += size
-        
+                for i, s in enumerate(r2_stds):
+                    group_number = (i % num_groups_to_form) + 1
+                    s['round2_group'] = f"Group {group_number}"
+
+        # Highlight students who could not be assigned to any sector
+        for s in students:
+            if not s['round1'] or not s['round2']:
+                s['highlight'] = 'red'
+            else:
+                s['highlight'] = None
+
+        logging.info("Grouping complete.")
         return students
 
-    def update_class_dfs(self, class_dfs, all_df, students):
-        """
-        Update class DataFrames with sector and group assignments.
-        
-        Args:
-            class_dfs (dict): Dictionary of class DataFrames.
-            all_df (pd.DataFrame): Combined All F5 F6 DataFrame.
-            students (list): List of student dictionaries with assignments.
-        
-        Returns:
-            tuple: (updated class_dfs, updated all_df)
-        """
+    def _update_dataframes_with_assignments(self, class_dfs, all_df, students):
+        logging.info("Updating DataFrames with final assignments...")
         student_map = {(s['Class'], s['Cls No']): s for s in students}
-        for idx, row in all_df.iterrows():
-            student_id = (row['Class'], row['Cls No'])
-            if student_id in student_map:
-                s = student_map[student_id]
-                all_df.at[idx, 'Round 1 Sector'] = s.get('round1', '')
-                all_df.at[idx, 'Round 1 Group'] = s.get('round1_group', '')
-                all_df.at[idx, 'Round 2 Sector'] = s.get('round2', '')
-                all_df.at[idx, 'Round 2 Group'] = s.get('round2_group', '')
         
-        for cls in self.classes:
-            df = class_dfs[cls]
-            for idx, row in df.iterrows():
-                student_id = (row['Class'], row['Cls No'])
-                if student_id in student_map:
-                    s = student_map[student_id]
-                    df.at[idx, 'Round 1 Sector'] = s.get('round1', '')
-                    df.at[idx, 'Round 1 Group'] = s.get('round1_group', '')
-                    df.at[idx, 'Round 2 Sector'] = s.get('round2', '')
-                    df.at[idx, 'Round 2 Group'] = s.get('round2_group', '')
-        
+        for col in ['Round 1 Sector', 'Round 1 Group', 'Round 2 Sector', 'Round 2 Group']:
+            if col not in all_df.columns:
+                all_df[col] = None
+
+        all_df['key'] = list(zip(all_df['Class'], all_df['Cls No']))
+        all_df['Round 1 Sector'] = all_df['key'].map(lambda x: student_map.get(x, {}).get('round1'))
+        all_df['Round 1 Group'] = all_df['key'].map(lambda x: student_map.get(x, {}).get('round1_group'))
+        all_df['Round 2 Sector'] = all_df['key'].map(lambda x: student_map.get(x, {}).get('round2'))
+        all_df['Round 2 Group'] = all_df['key'].map(lambda x: student_map.get(x, {}).get('round2_group'))
+        all_df.drop(columns=['key'], inplace=True)
+
+        for cls in self.CLASSES:
+            class_dfs[cls] = all_df[all_df['Class'] == cls].copy()
+
+        logging.info("DataFrame updates complete.")
         return class_dfs, all_df
 
-    def write_to_excel(self, class_dfs, all_df, students, output_file=None):
-        """
-        Write class, sector, and All F5 F6 DataFrames to Excel with highlighting and an overview sheet.
+    # --- REVISED EXCEL WRITING FOR CLEAN OUTPUT ---
+    def _write_to_excel(self, class_dfs, all_df, students, output_file):
+        logging.info(f"Writing output to Excel file: {output_file}")
+        
+        # Define the exact columns for the final output
+        final_output_columns = [
+            'Class', 'Cls No', 'Reg No', 'Eng Name', 'Chi Name', 
+            '1st Priority', '2nd Priority', '3rd Priority', 
+            'Round 1 Sector', 'Round 1 Group', 
+            'Round 2 Sector', 'Round 2 Group'
+        ]
 
-        Args:
-            class_dfs (dict): Dictionary of class DataFrames.
-            all_df (pd.DataFrame): Combined All F5 F6 DataFrame.
-            students (list): List of student dictionaries with assignments.
-            output_file (str, optional): Path to output Excel file.
-        """
-        if output_file is None:
-            output_file = f"output_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # Write class sheets
-            for cls in self.classes:
-                df = class_dfs[cls]
-                df.to_excel(writer, sheet_name=cls, index=False)
-                worksheet = writer.sheets[cls]
-                for idx, row in df.iterrows():
-                    if row['1st Priority'] == '':
-                        for col in range(1, len(df.columns) + 1):
-                            worksheet.cell(row=idx + 2, column=col).fill = self.yellow_fill
+            pd.DataFrame(list(self.speaker_counts.items()), columns=['Sector', 'NumberOfSpeakers']).to_excel(
+                writer, sheet_name='Speaker Allocation', index=False
+            )
             
-            # Write sector sheets
-            student_map = {(s['Class'], s['Cls No']): s for s in students}
-            for sec in self.sectors:
-                sheet_df = pd.DataFrame(columns=['Student', 'Group'])
-                r1_stds = [s for s in students if s['round1'] == sec]
-                r2_stds = [s for s in students if s['round2'] == sec]
+            # Write individual class sheets
+            for cls in self.CLASSES:
+                df_full = class_dfs[cls]
+                cols_to_write = [col for col in final_output_columns if col in df_full.columns]
+                df_to_write = df_full[cols_to_write]
+                df_to_write.to_excel(writer, sheet_name=cls, index=False)
+            
+            # Write individual sector sheets
+            for sec in self.SECTORS:
+                r1_stds = sorted([s for s in students if s['round1'] == sec], key=lambda x: (x.get('round1_group', ''), x['Class'], x['Cls No']))
+                r2_stds = sorted([s for s in students if s['round2'] == sec], key=lambda x: (x.get('round2_group', ''), x['Class'], x['Cls No']))
                 
-                row_idx = 0
+                sector_data = []
                 if r1_stds:
-                    sheet_df.loc[row_idx, 'Student'] = 'Round 1'
-                    sheet_df.loc[row_idx, 'Group'] = ''
-                    row_idx += 1
-                    r1_groups = sorted(set(s['round1_group'] for s in r1_stds if s['round1_group']))
-                    for group in r1_groups:
-                        group_stds = [s for s in r1_stds if s['round1_group'] == group]
-                        group_stds.sort(key=lambda s: (s['Class'], s['Cls No']))
-                        for s in group_stds:
-                            sheet_df.loc[row_idx, 'Student'] = f"{s['Class']} {s['Cls No']} {s['Eng Name']}"
-                            sheet_df.loc[row_idx, 'Group'] = s['round1_group'] or ''
-                            row_idx += 1
+                    sector_data.append({'Student': 'Round 1', 'Group': ''})
+                    for s in r1_stds:
+                        sector_data.append({'Student': f"{s['Class']} {s['Cls No']} {s.get('Eng Name', '')}", 'Group': s.get('round1_group')})
                 
-                row_idx = 31
                 if r2_stds:
-                    sheet_df.loc[row_idx, 'Student'] = 'Round 2'
-                    sheet_df.loc[row_idx, 'Group'] = ''
-                    row_idx += 1
-                    r2_groups = sorted(set(s['round2_group'] for s in r2_stds if s['round2_group']))
-                    for group in r2_groups:
-                        group_stds = [s for s in r2_stds if s['round2_group'] == group]
-                        group_stds.sort(key=lambda s: (s['Class'], s['Cls No']))
-                        for s in group_stds:
-                            sheet_df.loc[row_idx, 'Student'] = f"{s['Class']} {s['Cls No']} {s['Eng Name']}"
-                            sheet_df.loc[row_idx, 'Group'] = s['round2_group'] or ''
-                            row_idx += 1
+                    sector_data.append({'Student': '', 'Group': ''})
+                    sector_data.append({'Student': 'Round 2', 'Group': ''})
+                    for s in r2_stds:
+                        sector_data.append({'Student': f"{s['Class']} {s['Cls No']} {s.get('Eng Name', '')}", 'Group': s.get('round2_group')})
                 
-                sheet_df.to_excel(writer, sheet_name=sec[:31], index=False)
+                pd.DataFrame(sector_data).to_excel(writer, sheet_name=sec[:31], index=False)
             
-            # Write All F5 F6 sheet
-            assign_df = all_df.drop(columns=['p1_list', 'p2_list', 'p3_list'], errors='ignore')
-            assign_df.to_excel(writer, sheet_name='All F5 F6', index=False)
+            # Write all students sheet
+            cols_to_write_all = [col for col in final_output_columns if col in all_df.columns]
+            all_df_final = all_df[cols_to_write_all]
+            all_df_final.to_excel(writer, sheet_name='All F5 F6', index=False)
             worksheet = writer.sheets['All F5 F6']
-            for idx, row in assign_df.iterrows():
-                student_id = (row['Class'], row['Cls No'])
-                all_prefs = []
-                if student_id in student_map:
-                    s = student_map[student_id]
-                    all_prefs = s['p1_list'] + s['p2_list'] + s['p3_list']
-                
-                if not row['Round 1 Sector'] or not row['Round 2 Sector'] or \
-                   not row['Round 1 Group'] or not row['Round 2 Group']:
-                    for col in range(1, len(assign_df.columns) + 1):
-                        worksheet.cell(row=idx + 2, column=col).fill = self.yellow_fill
-                elif (row['Round 1 Sector'] and row['Round 1 Sector'] not in all_prefs) or \
-                     (row['Round 2 Sector'] and row['Round 2 Sector'] not in all_prefs):
-                    for col in range(1, len(assign_df.columns) + 1):
-                        worksheet.cell(row=idx + 2, column=col).fill = self.red_fill
-                elif row['1st Priority'] == '' and row['2nd Priority'] == '' and row['3rd Priority'] == '':
-                    for col in range(1, len(assign_df.columns) + 1):
-                        worksheet.cell(row=idx + 2, column=col).fill = self.grey_fill
             
+            for idx, row in all_df.iterrows():
+                if row.get('highlight') == 'red':
+                    for col in range(1, len(all_df_final.columns) + 1):
+                        worksheet.cell(row=idx + 2, column=col).fill = self.red_fill
+
             # Write overview sheet
             overview_data = []
-            for sec in self.sectors:
-                r1_stds = [s for s in students if s['round1'] == sec]
-                r2_stds = [s for s in students if s['round2'] == sec]
-                r1_groups = Counter(s['round1_group'] for s in r1_stds if s['round1_group'])
-                r2_groups = Counter(s['round2_group'] for s in r2_stds if s['round2_group'])
+            for sec in self.SECTORS:
+                r1_groups_counter = Counter(s['round1_group'] for s in students if s['round1'] == sec and s['round1_group'])
+                r2_groups_counter = Counter(s['round2_group'] for s in students if s['round2'] == sec and s['round2_group'])
                 
-                for group, count in r1_groups.items():
+                for group, count in sorted(r1_groups_counter.items()):
                     overview_data.append({'Sector': sec, 'Round': 'Round 1', 'Group': group, 'Students': count})
-                for group, count in r2_groups.items():
+                for group, count in sorted(r2_groups_counter.items()):
                     overview_data.append({'Sector': sec, 'Round': 'Round 2', 'Group': group, 'Students': count})
             
-            overview_df = pd.DataFrame(overview_data)
-            overview_df.to_excel(writer, sheet_name='Overview', index=False)
+            pd.DataFrame(overview_data).to_excel(writer, sheet_name='Overview', index=False)
+        logging.info("Excel file writing complete.")
 
-    def process(self, min_sector_size=0, output_file=None, max_group_size=16, min_group_size=10):
-        """Main method to process responses and assign sectors."""
-        input_folder = "input"
-        output_folder = "output"
-        os.makedirs(output_folder, exist_ok=True)
-
-        response_file_path = os.path.join(input_folder, self.response_file)
-        classlist_file_path = os.path.join(input_folder, self.classlist_file)
-
-        response_df = pd.read_excel(response_file_path, sheet_name="Form Responses 1")
-        response_df.columns = [
-            'Timestamp', 'Chinese Name', 'English Name', 'Class', 'Class No.', 'Column 12',
-            '1st Priority', '2nd Priority', '3rd Priority', 'Particular Course',
-            'Topics and Suggestions', 'Other Majors'
-        ]
+    def process(self, output_file=None, speaker_sheet_name=0):
+        logging.info("Starting main processing workflow...")
+        os.makedirs("output", exist_ok=True)
         
+        self._load_speaker_data(sheet_name=speaker_sheet_name)
+        
+        response_df = pd.read_excel(self.response_file, sheet_name=self.RESPONSE_SHEET)
+        response_df = response_df[list(self.RESPONSE_COLS.keys())].rename(columns=self.RESPONSE_COLS)
+        
+        # --- REVISED CLASSLIST LOADING TO CLEAN COLUMNS ---
+        logging.info("Loading and preparing class list files...")
         class_dfs = {}
-        for cls in self.classes:
-            df = pd.read_excel(classlist_file_path, sheet_name=cls)
-            df.drop(columns=[col for col in df.columns if col.startswith('AFT')], inplace=True, errors='ignore')
-            df.rename(columns={col: 'Chi Name' for col in df.columns if col.startswith('FT')}, inplace=True)
-            new_cols = [
-                '1st Priority', '2nd Priority', '3rd Priority', 'Particular Course', 
-                'Topics and Suggestions', 'Other Majors', 
-                'Round 1 Sector', 'Round 1 Group', 'Round 2 Sector', 'Round 2 Group'
-            ]
-            for col in new_cols:
-                df[col] = ''
+        for cls in self.CLASSES:
+            df = pd.read_excel(self.classlist_file, sheet_name=cls)
+            
+            # Find the first 'FT:' column and rename it to 'Chi Name'
+            ft_cols = [col for col in df.columns if str(col).startswith('FT:')]
+            if ft_cols:
+                df.rename(columns={ft_cols[0]: 'Chi Name'}, inplace=True)
+            
+            # Find all remaining 'FT:' and all 'AFT:' columns to drop
+            cols_to_drop = [col for col in df.columns if str(col).startswith('AFT:')]
+            ft_cols_remaining = [col for col in df.columns if str(col).startswith('FT:')]
+            cols_to_drop.extend(ft_cols_remaining)
+            
+            df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+            
+            df['Class'] = cls
             class_dfs[cls] = df
         
-        class_dfs, all_df = self.merge_responses(response_df, class_dfs)
-        all_df = self.extract_sectors(all_df)
-        assign_df = all_df[all_df['p1_list'].map(len) > 0].copy()
-        students = self.assign_sectors(assign_df, min_sector_size=min_sector_size)
-        students = self.group_students_by_sector(students, max_group_size=max_group_size, min_group_size=min_group_size)
-        class_dfs, all_df = self.update_class_dfs(class_dfs, all_df, students)
+        class_dfs, all_df = self._merge_responses_with_classlists(response_df, class_dfs)
+        all_df = self._extract_sectors(all_df)
+        
+        assign_df = all_df[all_df['p1_list'].map(len) > 0].dropna(subset=['Cls No']).copy()
+        
+        students = self._assign_sectors(assign_df)
+        students = self._group_students_by_speaker_availability(students)
+        
+        class_dfs, all_df = self._update_dataframes_with_assignments(class_dfs, all_df, students)
         
         if output_file is None:
-            output_file = os.path.join(output_folder, f"output_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-        self.write_to_excel(class_dfs, all_df, students, output_file=output_file)
+            output_file = os.path.join("output", f"student_assignments_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+        
+        self._write_to_excel(class_dfs, all_df, students, output_file=output_file)
+        logging.info(f"Processing complete. Output saved to {output_file}")
+
+if __name__ == '__main__':
+    try:
+        processor = StudentAssignmentProcessor(
+            response_file='input/response_file.xlsx',
+            classlist_file='input/classlist_file.xlsx',
+            speaker_file='input/Speaker_list.xlsx'
+        )
+        processor.process()
+        
+    except FileNotFoundError as e:
+        logging.error(f"A required file was not found. Please check the file paths. Details: {e}")
+    except KeyError as e:
+        logging.error(f"A required column was not found in one of the files. Please check column names. Details: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during processing: {e}")
