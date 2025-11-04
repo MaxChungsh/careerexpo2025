@@ -32,7 +32,7 @@ class StudentAssignmentProcessor:
             'Social Science & Social Work'
         ]
         self.CLASSES = ['5A', '5B', '5C', '5D', '6A', '6B', '6C', '6D']
-        self.MAX_PER_SECTOR = 48
+        self.MAX_PER_SECTOR = 200
         self.MAX_GROUP_SIZE = 25
 
         # --- File Column/Sheet Names ---
@@ -215,8 +215,7 @@ class StudentAssignmentProcessor:
             r1_stds = [s for s in students if s['round1'] == sec]
             if r1_stds:
                 num_students_r1 = len(r1_stds)
-                groups_needed = math.ceil(num_students_r1 / self.MAX_GROUP_SIZE)
-                num_groups_to_form = min(groups_needed, num_speakers)
+                num_groups_to_form = num_speakers  # Always create groups equal to the number of speakers
                 
                 random.shuffle(r1_stds)
                 for i, s in enumerate(r1_stds):
